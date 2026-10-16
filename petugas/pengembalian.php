@@ -1,3 +1,4 @@
+
 <?php
 session_start();
 include '../koneksi.php';
@@ -116,7 +117,7 @@ if (isset($_POST['kembalikan'])) {
 
         mysqli_stmt_close($stmt);
 
-        // Kembalikan stok alat.
+        // Tambahkan stok alat yang dikembalikan.
         foreach ($daftarAlat as $item) {
             $id_alat = (int) $item['id_alat'];
             $jumlah = (int) $item['jumlah'];
@@ -134,13 +135,12 @@ if (isset($_POST['kembalikan'])) {
 
             mysqli_stmt_bind_param($stmt, "ii", $jumlah, $id_alat);
             mysqli_stmt_execute($stmt);
+            $berhasil = mysqli_stmt_affected_rows($stmt);
+            mysqli_stmt_close($stmt);
 
-            if (mysqli_stmt_affected_rows($stmt) !== 1) {
-                mysqli_stmt_close($stmt);
+            if ($berhasil !== 1) {
                 throw new Exception("Gagal memperbarui stok.");
             }
-
-            mysqli_stmt_close($stmt);
         }
 
         // Ubah status peminjaman.
@@ -154,13 +154,12 @@ if (isset($_POST['kembalikan'])) {
 
         mysqli_stmt_bind_param($stmt, "i", $id_peminjaman);
         mysqli_stmt_execute($stmt);
+        $berhasil = mysqli_stmt_affected_rows($stmt);
+        mysqli_stmt_close($stmt);
 
-        if (mysqli_stmt_affected_rows($stmt) !== 1) {
-            mysqli_stmt_close($stmt);
+        if ($berhasil !== 1) {
             throw new Exception("Gagal memperbarui status.");
         }
-
-        mysqli_stmt_close($stmt);
 
         // Catat aktivitas jika tabel tersedia.
         $cekLog = mysqli_query(
@@ -192,15 +191,166 @@ if (isset($_POST['kembalikan'])) {
         }
 
         mysqli_commit($koneksi);
-
         header("Location: pengembalian.php?pesan=berhasil");
         exit;
 
-    } catch (Throwable $e) {
+    } catch (Throwable $err) {
         mysqli_rollback($koneksi);
-        error_log("Pengembalian: " . $e->getMessage());
+        error_log("Pengembalian: " . $err->getMessage());
 
         header("Location: pengembalian.php?pesan=gagal");
+        exit;
+    }
+}
+
+/* HAPUS RIWAYAT DAN BATALKAN PENGEMBALIAN */
+if (isset($_POST['hapus_pengembalian'])) {
+    $id_pengembalian = (int) ($_POST['id_pengembalian'] ?? 0);
+
+    mysqli_begin_transaction($koneksi);
+
+    try {
+        $stmt = mysqli_prepare(
+            $koneksi,
+            "SELECT pg.id_pengembalian, pg.id_peminjaman, p.status
+             FROM pengembalian pg
+             JOIN peminjaman p
+                ON pg.id_peminjaman = p.id_peminjaman
+             WHERE pg.id_pengembalian = ?
+             FOR UPDATE"
+        );
+
+        mysqli_stmt_bind_param($stmt, "i", $id_pengembalian);
+        mysqli_stmt_execute($stmt);
+        $data = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+        mysqli_stmt_close($stmt);
+
+        if (!$data || $data['status'] !== 'dikembalikan') {
+            throw new Exception("Riwayat pengembalian tidak valid.");
+        }
+
+        $id_peminjaman = (int) $data['id_peminjaman'];
+
+        $stmt = mysqli_prepare(
+            $koneksi,
+            "SELECT id_alat, jumlah
+             FROM detail_peminjaman
+             WHERE id_peminjaman = ?
+             FOR UPDATE"
+        );
+
+        mysqli_stmt_bind_param($stmt, "i", $id_peminjaman);
+        mysqli_stmt_execute($stmt);
+        $hasil = mysqli_stmt_get_result($stmt);
+
+        $daftarAlat = [];
+
+        while ($item = mysqli_fetch_assoc($hasil)) {
+            $daftarAlat[] = $item;
+        }
+
+        mysqli_stmt_close($stmt);
+
+        // Mendukung data peminjaman lama.
+        if (count($daftarAlat) === 0) {
+            $stmt = mysqli_prepare(
+                $koneksi,
+                "SELECT id_alat, jumlah
+                 FROM peminjaman
+                 WHERE id_peminjaman = ?"
+            );
+
+            mysqli_stmt_bind_param($stmt, "i", $id_peminjaman);
+            mysqli_stmt_execute($stmt);
+            $itemLama = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+            mysqli_stmt_close($stmt);
+
+            if ($itemLama) {
+                $daftarAlat[] = $itemLama;
+            }
+        }
+
+        if (count($daftarAlat) === 0) {
+            throw new Exception("Daftar alat tidak ditemukan.");
+        }
+
+        // Kurangi stok lagi karena peminjaman aktif kembali.
+        foreach ($daftarAlat as $item) {
+            $id_alat = (int) $item['id_alat'];
+            $jumlah = (int) $item['jumlah'];
+
+            if ($id_alat < 1 || $jumlah < 1) {
+                throw new Exception("Data alat tidak valid.");
+            }
+
+            $stmt = mysqli_prepare(
+                $koneksi,
+                "UPDATE alat
+                 SET stok = stok - ?
+                 WHERE id_alat = ?
+                   AND stok >= ?"
+            );
+
+            mysqli_stmt_bind_param(
+                $stmt,
+                "iii",
+                $jumlah,
+                $id_alat,
+                $jumlah
+            );
+
+            mysqli_stmt_execute($stmt);
+            $berhasil = mysqli_stmt_affected_rows($stmt);
+            mysqli_stmt_close($stmt);
+
+            if ($berhasil !== 1) {
+                throw new Exception("Stok alat tidak cukup.");
+            }
+        }
+
+        // Hapus catatan pengembalian.
+        $stmt = mysqli_prepare(
+            $koneksi,
+            "DELETE FROM pengembalian
+             WHERE id_pengembalian = ?"
+        );
+
+        mysqli_stmt_bind_param($stmt, "i", $id_pengembalian);
+        mysqli_stmt_execute($stmt);
+        $terhapus = mysqli_stmt_affected_rows($stmt);
+        mysqli_stmt_close($stmt);
+
+        if ($terhapus !== 1) {
+            throw new Exception("Gagal menghapus riwayat.");
+        }
+
+        // Aktifkan kembali peminjaman.
+        $stmt = mysqli_prepare(
+            $koneksi,
+            "UPDATE peminjaman
+             SET status = 'dipinjam'
+             WHERE id_peminjaman = ?
+               AND status = 'dikembalikan'"
+        );
+
+        mysqli_stmt_bind_param($stmt, "i", $id_peminjaman);
+        mysqli_stmt_execute($stmt);
+        $berhasil = mysqli_stmt_affected_rows($stmt);
+        mysqli_stmt_close($stmt);
+
+        if ($berhasil !== 1) {
+            throw new Exception("Gagal mengubah status peminjaman.");
+        }
+
+        mysqli_commit($koneksi);
+        header("Location: pengembalian.php?pesan=terhapus");
+        exit;
+
+    } catch (Throwable $err) {
+        mysqli_rollback($koneksi);
+        error_log("Hapus pengembalian: " . $err->getMessage());
+
+        header("Location: pengembalian.php?pesan=gagal_hapus");
         exit;
     }
 }
@@ -244,6 +394,8 @@ $riwayat = mysqli_query(
         pg.id_pengembalian,
         pm.username,
         p.id_peminjaman,
+        p.tgl_pinjam,
+        p.tgl_rencana_kembali,
         pg.tgl_kembali,
         pg.hari_telat,
         pg.denda,
@@ -261,6 +413,8 @@ $riwayat = mysqli_query(
         pg.id_pengembalian,
         pm.username,
         p.id_peminjaman,
+        p.tgl_pinjam,
+        p.tgl_rencana_kembali,
         pg.tgl_kembali,
         pg.hari_telat,
         pg.denda
@@ -289,9 +443,12 @@ function tampilkanAlat($koneksi, $row) {
          WHERE p.id_peminjaman = ?"
     );
 
+    if (!$stmt) {
+        return '-';
+    }
+
     mysqli_stmt_bind_param($stmt, "i", $id);
     mysqli_stmt_execute($stmt);
-
     $alat = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
     mysqli_stmt_close($stmt);
 
@@ -458,12 +615,7 @@ function tampilkanAlat($koneksi, $row) {
             color: #2338A0;
         }
 
-        .status.dikembalikan {
-            background: #E2F5E8;
-            color: #246B3C;
-        }
-
-        .btn-kembali {
+        .btn-aksi {
             display: inline-block;
             padding: 8px 11px;
             border-radius: 7px;
@@ -472,6 +624,10 @@ function tampilkanAlat($koneksi, $row) {
             font-weight: 600;
             white-space: nowrap;
             border: 0;
+            cursor: pointer;
+        }
+
+        .btn-kembali {
             background: var(--blue);
             color: white;
         }
@@ -479,6 +635,26 @@ function tampilkanAlat($koneksi, $row) {
         .btn-kembali:hover {
             background: #1929A8;
             color: white;
+        }
+
+        .btn-detail {
+            background: #E5E9FF;
+            color: #2338A0;
+        }
+
+        .btn-detail:hover {
+            background: #D3DAFF;
+            color: var(--ink);
+        }
+
+        .btn-hapus {
+            background: #FCE4E4;
+            color: #A52834;
+        }
+
+        .btn-hapus:hover {
+            background: #F8D0D0;
+            color: #842029;
         }
 
         .pesan {
@@ -566,13 +742,22 @@ function tampilkanAlat($koneksi, $row) {
                     <div class="alert alert-success pesan">
                         Pengembalian berhasil dicatat dan stok alat diperbarui.
                     </div>
+                <?php elseif ($_GET['pesan'] === 'terhapus'): ?>
+                    <div class="alert alert-success pesan">
+                        Riwayat dihapus. Peminjaman aktif kembali.
+                    </div>
                 <?php elseif ($_GET['pesan'] === 'gagal'): ?>
                     <div class="alert alert-danger pesan">
                         Pengembalian gagal diproses. Periksa data peminjaman.
                     </div>
+                <?php elseif ($_GET['pesan'] === 'gagal_hapus'): ?>
+                    <div class="alert alert-danger pesan">
+                        Riwayat gagal dihapus. Periksa stok dan status peminjaman.
+                    </div>
                 <?php endif; ?>
             <?php endif; ?>
 
+            <!-- PEMINJAMAN AKTIF -->
             <section class="panel">
                 <h2 class="panel-title mb-1">Alat yang Belum Dikembalikan</h2>
                 <p class="muted small mb-4">
@@ -594,62 +779,49 @@ function tampilkanAlat($koneksi, $row) {
                         </thead>
 
                         <tbody>
-                            <?php if ($jumlahAktif > 0): ?>
-                                <?php $no = 1; ?>
-
-                                <?php while ($row = mysqli_fetch_assoc($query)): ?>
-                                    <tr>
-                                        <td><?= $no++ ?></td>
-
-                                        <td class="fw-semibold">
-                                            <?= e($row['username']) ?>
-                                        </td>
-
-                                        <td>
-                                            <?= tampilkanAlat($koneksi, $row) ?>
-                                        </td>
-
-                                        <td><?= e($row['tgl_pinjam']) ?></td>
-
-                                        <td><?= e($row['tgl_rencana_kembali']) ?></td>
-
-                                        <td>
-                                            <span class="status dipinjam">
-                                                Dipinjam
-                                            </span>
-                                        </td>
-
-                                        <td>
-                                            <form method="POST"
-                                                  onsubmit="return confirm('Proses pengembalian semua alat ini?')">
-                                                <input
-                                                    type="hidden"
-                                                    name="id_peminjaman"
-                                                    value="<?= (int) $row['id_peminjaman'] ?>">
-
-                                                <button
-                                                    type="submit"
-                                                    name="kembalikan"
-                                                    class="btn-kembali">
-                                                    Proses Kembali
-                                                </button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                <?php endwhile; ?>
-
-                            <?php else: ?>
+                        <?php if ($jumlahAktif > 0): ?>
+                            <?php $no = 1; ?>
+                            <?php while ($row = mysqli_fetch_assoc($query)): ?>
                                 <tr>
-                                    <td colspan="7" class="text-center py-4 muted">
-                                        Tidak ada alat yang sedang dipinjam.
+                                    <td><?= $no++ ?></td>
+                                    <td class="fw-semibold">
+                                        <?= e($row['username']) ?>
+                                    </td>
+                                    <td><?= tampilkanAlat($koneksi, $row) ?></td>
+                                    <td><?= e($row['tgl_pinjam']) ?></td>
+                                    <td><?= e($row['tgl_rencana_kembali']) ?></td>
+                                    <td>
+                                        <span class="status dipinjam">Dipinjam</span>
+                                    </td>
+                                    <td>
+                                        <form method="POST"
+                                              onsubmit="return confirm('Proses pengembalian semua alat ini?')">
+                                            <input type="hidden"
+                                                   name="id_peminjaman"
+                                                   value="<?= (int) $row['id_peminjaman'] ?>">
+
+                                            <button type="submit"
+                                                    name="kembalikan"
+                                                    class="btn-aksi btn-kembali">
+                                                Proses Kembali
+                                            </button>
+                                        </form>
                                     </td>
                                 </tr>
-                            <?php endif; ?>
+                            <?php endwhile; ?>
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="7" class="text-center py-4 muted">
+                                    Tidak ada alat yang sedang dipinjam.
+                                </td>
+                            </tr>
+                        <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
             </section>
 
+            <!-- RIWAYAT PENGEMBALIAN -->
             <section class="panel">
                 <h2 class="panel-title mb-1">Riwayat Pengembalian</h2>
                 <p class="muted small mb-4">
@@ -666,44 +838,143 @@ function tampilkanAlat($koneksi, $row) {
                                 <th>Tgl. Kembali</th>
                                 <th>Terlambat</th>
                                 <th>Denda</th>
+                                <th>Aksi</th>
                             </tr>
                         </thead>
 
                         <tbody>
-                            <?php if ($jumlahRiwayat > 0): ?>
-                                <?php $no = 1; ?>
+                        <?php if ($jumlahRiwayat > 0): ?>
+                            <?php $no = 1; ?>
 
-                                <?php while ($row = mysqli_fetch_assoc($riwayat)): ?>
-                                    <tr>
-                                        <td><?= $no++ ?></td>
+                            <?php while ($row = mysqli_fetch_assoc($riwayat)): ?>
+                                <?php $modalId = 'detail' . (int) $row['id_pengembalian']; ?>
 
-                                        <td class="fw-semibold">
-                                            <?= e($row['username']) ?>
-                                        </td>
-
-                                        <td>
-                                            <?= tampilkanAlat($koneksi, $row) ?>
-                                        </td>
-
-                                        <td><?= e($row['tgl_kembali']) ?></td>
-
-                                        <td>
-                                            <?= (int) $row['hari_telat'] ?> hari
-                                        </td>
-
-                                        <td class="fw-semibold">
-                                            Rp<?= number_format((int) $row['denda'], 0, ',', '.') ?>
-                                        </td>
-                                    </tr>
-                                <?php endwhile; ?>
-
-                            <?php else: ?>
                                 <tr>
-                                    <td colspan="6" class="text-center py-4 muted">
-                                        Belum ada riwayat pengembalian.
+                                    <td><?= $no++ ?></td>
+                                    <td class="fw-semibold">
+                                        <?= e($row['username']) ?>
+                                    </td>
+                                    <td><?= tampilkanAlat($koneksi, $row) ?></td>
+                                    <td><?= e($row['tgl_kembali']) ?></td>
+                                    <td><?= (int) $row['hari_telat'] ?> hari</td>
+                                    <td class="fw-semibold">
+                                        Rp<?= number_format((int) $row['denda'], 0, ',', '.') ?>
+                                    </td>
+                                    <td>
+                                        <div class="d-flex gap-2">
+                                            <button type="button"
+                                                    class="btn-aksi btn-detail"
+                                                    data-bs-toggle="modal"
+                                                    data-bs-target="#<?= e($modalId) ?>">
+                                                Detail
+                                            </button>
+
+                                            <form method="POST"
+                                                  onsubmit="return confirm('Hapus riwayat ini? Peminjaman akan aktif kembali dan stok akan dikurangi lagi.')">
+                                                <input type="hidden"
+                                                       name="id_pengembalian"
+                                                       value="<?= (int) $row['id_pengembalian'] ?>">
+
+                                                <button type="submit"
+                                                        name="hapus_pengembalian"
+                                                        class="btn-aksi btn-hapus">
+                                                    Hapus
+                                                </button>
+                                            </form>
+                                        </div>
                                     </td>
                                 </tr>
-                            <?php endif; ?>
+
+                                <!-- MODAL DETAIL TANPA ID -->
+                                <div class="modal fade"
+                                     id="<?= e($modalId) ?>"
+                                     tabindex="-1"
+                                     aria-hidden="true">
+
+                                    <div class="modal-dialog modal-dialog-centered">
+                                        <div class="modal-content border-0"
+                                             style="border-radius:14px; overflow:hidden">
+
+                                            <div class="modal-header"
+                                                 style="background:#EDF0FF">
+                                                <h5 class="modal-title fw-bold">
+                                                    Detail Pengembalian
+                                                </h5>
+
+                                                <button type="button"
+                                                        class="btn-close"
+                                                        data-bs-dismiss="modal"
+                                                        aria-label="Tutup"></button>
+                                            </div>
+
+                                            <div class="modal-body p-4">
+                                                <div class="mb-3">
+                                                    <small class="muted">Nama Peminjam</small>
+                                                    <div class="fw-semibold">
+                                                        <?= e($row['username']) ?>
+                                                    </div>
+                                                </div>
+
+                                                <div class="mb-3">
+                                                    <small class="muted">Daftar Alat</small>
+                                                    <div>
+                                                        <?= tampilkanAlat($koneksi, $row) ?>
+                                                    </div>
+                                                </div>
+
+                                                <div class="row">
+                                                    <div class="col-6 mb-3">
+                                                        <small class="muted">Tanggal Pinjam</small>
+                                                        <div><?= e($row['tgl_pinjam']) ?></div>
+                                                    </div>
+
+                                                    <div class="col-6 mb-3">
+                                                        <small class="muted">Rencana Kembali</small>
+                                                        <div><?= e($row['tgl_rencana_kembali']) ?></div>
+                                                    </div>
+
+                                                    <div class="col-6 mb-3">
+                                                        <small class="muted">Tanggal Kembali</small>
+                                                        <div><?= e($row['tgl_kembali']) ?></div>
+                                                    </div>
+
+                                                    <div class="col-6 mb-3">
+                                                        <small class="muted">Terlambat</small>
+                                                        <div>
+                                                            <?= (int) $row['hari_telat'] ?> hari
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="p-3 rounded-3"
+                                                     style="background:#F4F6FF">
+                                                    <small class="muted">Total Denda</small>
+                                                    <div class="fs-5 fw-bold">
+                                                        Rp<?= number_format((int) $row['denda'], 0, ',', '.') ?>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div class="modal-footer">
+                                                <button type="button"
+                                                        class="btn btn-secondary"
+                                                        data-bs-dismiss="modal">
+                                                    Tutup
+                                                </button>
+                                            </div>
+
+                                        </div>
+                                    </div>
+                                </div>
+                            <?php endwhile; ?>
+
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="7" class="text-center py-4 muted">
+                                    Belum ada riwayat pengembalian.
+                                </td>
+                            </tr>
+                        <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
@@ -712,5 +983,7 @@ function tampilkanAlat($koneksi, $row) {
         </main>
     </div>
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

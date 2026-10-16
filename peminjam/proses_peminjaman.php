@@ -1,4 +1,3 @@
-```php
 <?php
 session_start();
 include '../koneksi.php';
@@ -201,4 +200,3 @@ try {
     exit;
 }
 ?>
-```

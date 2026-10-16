@@ -1,4 +1,3 @@
-```php
 <?php
 session_start();
 require_once 'koneksi.php';
@@ -245,4 +244,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </script>
 </body>
 </html>
-```

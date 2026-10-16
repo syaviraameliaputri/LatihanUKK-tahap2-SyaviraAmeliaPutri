@@ -15,6 +15,7 @@ $pesan = '';
 $jenisPesan = 'success';
 $editData = null;
 
+/* PROSES TAMBAH, EDIT, HAPUS */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $aksi = $_POST['aksi'] ?? '';
     $id_alat = (int) ($_POST['id_alat'] ?? 0);
@@ -44,7 +45,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             mysqli_stmt_bind_param($cek, "i", $id_kategori);
             mysqli_stmt_execute($cek);
-            $kategoriAda = mysqli_num_rows(mysqli_stmt_get_result($cek)) > 0;
+
+            $kategoriAda = mysqli_num_rows(
+                mysqli_stmt_get_result($cek)
+            ) > 0;
+
             mysqli_stmt_close($cek);
 
             if (!$kategoriAda) {
@@ -54,8 +59,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($aksi === 'tambah') {
                     $stmt = mysqli_prepare(
                         $koneksi,
-                        "INSERT INTO alat (nama_alat, id_kategori, stok, kondisi)
-                         VALUES (?, ?, ?, ?)"
+                        "INSERT INTO alat
+                        (nama_alat, id_kategori, stok, kondisi)
+                        VALUES (?, ?, ?, ?)"
                     );
 
                     mysqli_stmt_bind_param(
@@ -70,7 +76,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = mysqli_prepare(
                         $koneksi,
                         "UPDATE alat
-                         SET nama_alat = ?, id_kategori = ?, stok = ?, kondisi = ?
+                         SET nama_alat = ?,
+                             id_kategori = ?,
+                             stok = ?,
+                             kondisi = ?
                          WHERE id_alat = ?"
                     );
 
@@ -104,14 +113,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $cek = mysqli_prepare(
                 $koneksi,
                 "SELECT
-                    (SELECT COUNT(*) FROM peminjaman WHERE id_alat = ?) +
-                    (SELECT COUNT(*) FROM detail_peminjaman WHERE id_alat = ?)
-                    AS total"
+                    (SELECT COUNT(*) FROM peminjaman
+                     WHERE id_alat = ?) +
+                    (SELECT COUNT(*) FROM detail_peminjaman
+                     WHERE id_alat = ?) AS total"
             );
 
             mysqli_stmt_bind_param($cek, "ii", $id_alat, $id_alat);
             mysqli_stmt_execute($cek);
-            $dataCek = mysqli_fetch_assoc(mysqli_stmt_get_result($cek));
+
+            $dataCek = mysqli_fetch_assoc(
+                mysqli_stmt_get_result($cek)
+            );
+
             mysqli_stmt_close($cek);
 
             if ((int) $dataCek['total'] > 0) {
@@ -139,6 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+/* NOTIFIKASI */
 if (isset($_GET['pesan'])) {
     $daftarPesan = [
         'tambah' => 'Data alat berhasil ditambahkan.',
@@ -152,52 +167,125 @@ if (isset($_GET['pesan'])) {
     }
 }
 
-$kategori = mysqli_query(
+/* DATA KATEGORI */
+$hasilKategori = mysqli_query(
     $koneksi,
     "SELECT id_kategori, nama_kategori
      FROM kategori
      ORDER BY nama_kategori ASC"
 );
 
-if (!$kategori) {
+if (!$hasilKategori) {
     die("Gagal mengambil data kategori.");
 }
 
-$dataAlat = mysqli_query(
-    $koneksi,
-    "SELECT a.id_alat, a.nama_alat, a.id_kategori, a.stok,
-            a.kondisi, k.nama_kategori
-     FROM alat a
-     LEFT JOIN kategori k ON a.id_kategori = k.id_kategori
-     ORDER BY a.id_alat DESC"
-);
+$kategoriList = [];
 
-if (!$dataAlat) {
-    die("Gagal mengambil data alat.");
+while ($k = mysqli_fetch_assoc($hasilKategori)) {
+    $kategoriList[] = $k;
 }
 
-$jumlahAlat = mysqli_num_rows($dataAlat);
+/* JUMLAH ALAT */
+$hasilJumlah = mysqli_query(
+    $koneksi,
+    "SELECT COUNT(*) AS total FROM alat"
+);
 
+$jumlahAlat = (int) mysqli_fetch_assoc($hasilJumlah)['total'];
+
+/* DATA EDIT */
 if (isset($_GET['edit'])) {
     $id_edit = (int) $_GET['edit'];
 
-    if ($id_edit > 0) {
-        $stmtEdit = mysqli_prepare(
-            $koneksi,
-            "SELECT * FROM alat WHERE id_alat = ?"
-        );
+    $stmtEdit = mysqli_prepare(
+        $koneksi,
+        "SELECT * FROM alat WHERE id_alat = ?"
+    );
 
-        mysqli_stmt_bind_param($stmtEdit, "i", $id_edit);
-        mysqli_stmt_execute($stmtEdit);
-        $editData = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtEdit));
-        mysqli_stmt_close($stmtEdit);
-    }
+    mysqli_stmt_bind_param($stmtEdit, "i", $id_edit);
+    mysqli_stmt_execute($stmtEdit);
+
+    $editData = mysqli_fetch_assoc(
+        mysqli_stmt_get_result($stmtEdit)
+    );
+
+    mysqli_stmt_close($stmtEdit);
 
     if (!$editData) {
         header("Location: alat.php");
         exit;
     }
 }
+
+/* FILTER KATEGORI */
+$filterKategori = isset($_GET['kategori'])
+    ? (int) $_GET['kategori']
+    : 0;
+
+/* VALIDASI FILTER */
+if ($filterKategori > 0) {
+    $cekKategori = mysqli_prepare(
+        $koneksi,
+        "SELECT id_kategori FROM kategori WHERE id_kategori = ?"
+    );
+
+    mysqli_stmt_bind_param($cekKategori, "i", $filterKategori);
+    mysqli_stmt_execute($cekKategori);
+
+    $kategoriFilterAda = mysqli_num_rows(
+        mysqli_stmt_get_result($cekKategori)
+    ) > 0;
+
+    mysqli_stmt_close($cekKategori);
+
+    if (!$kategoriFilterAda) {
+        $filterKategori = 0;
+    }
+}
+
+/* AMBIL DAFTAR ALAT */
+if ($filterKategori > 0) {
+    $stmtAlat = mysqli_prepare(
+        $koneksi,
+        "SELECT
+            a.id_alat,
+            a.nama_alat,
+            a.id_kategori,
+            a.stok,
+            a.kondisi,
+            k.nama_kategori
+         FROM alat a
+         LEFT JOIN kategori k
+            ON a.id_kategori = k.id_kategori
+         WHERE a.id_kategori = ?
+         ORDER BY a.nama_alat ASC"
+    );
+
+    mysqli_stmt_bind_param($stmtAlat, "i", $filterKategori);
+    mysqli_stmt_execute($stmtAlat);
+
+    $hasilAlat = mysqli_stmt_get_result($stmtAlat);
+} else {
+    $hasilAlat = mysqli_query(
+        $koneksi,
+        "SELECT
+            a.id_alat,
+            a.nama_alat,
+            a.id_kategori,
+            a.stok,
+            a.kondisi,
+            k.nama_kategori
+         FROM alat a
+         LEFT JOIN kategori k
+            ON a.id_kategori = k.id_kategori
+         ORDER BY k.nama_kategori ASC, a.nama_alat ASC"
+    );
+}
+
+if (!$hasilAlat) {
+    die("Gagal mengambil daftar alat.");
+}
+
 ?>
 
 <!DOCTYPE html>
@@ -205,9 +293,11 @@ if (isset($_GET['edit'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+
     <title>Data Alat - Pinjamin</title>
 
     <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 
     <style>
@@ -275,6 +365,7 @@ if (isset($_GET['edit'])) {
 
         .main {
             padding: 35px;
+            min-width: 0;
         }
 
         .topbar {
@@ -291,8 +382,7 @@ if (isset($_GET['edit'])) {
             color: var(--muted);
         }
 
-        .panel,
-        .stat-card {
+        .panel {
             background: var(--sheet);
             border: 1px solid var(--line);
             border-radius: 14px;
@@ -302,12 +392,6 @@ if (isset($_GET['edit'])) {
 
         .panel-title {
             font: 600 1.7rem "Cormorant Garamond", serif;
-        }
-
-        .stat-number {
-            font: 700 2.5rem "Cormorant Garamond", serif;
-            color: var(--blue);
-            margin-top: 8px;
         }
 
         .form-label {
@@ -356,6 +440,47 @@ if (isset($_GET['edit'])) {
             color: var(--ink);
         }
 
+        /* BUTTON KATEGORI MENYAMPING */
+        .category-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            padding: 3px 2px 12px;
+            margin-bottom: 15px;
+        }
+
+        .category-btn {
+            display: inline-block;
+            flex: 0 0 auto;
+            padding: 9px 18px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: white;
+            color: var(--ink);
+            text-decoration: none;
+            font-size: .9rem;
+            font-weight: 600;
+            white-space: nowrap;
+            transition: .2s;
+        }
+
+        .category-btn:hover,
+        .category-btn.active {
+            background: var(--blue);
+            border-color: var(--blue);
+            color: white;
+        }
+
+        .category-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
         .table {
             --bs-table-bg: transparent;
             --bs-table-color: var(--ink);
@@ -397,9 +522,9 @@ if (isset($_GET['edit'])) {
             display: inline-block;
             background: var(--yellow);
             color: var(--ink);
-            padding: 8px 14px;
+            padding: 7px 12px;
             border-radius: 20px;
-            font-size: .85rem;
+            font-size: .8rem;
             font-weight: 700;
         }
 
@@ -413,27 +538,14 @@ if (isset($_GET['edit'])) {
             margin: 0;
         }
 
-        .btn-action {
-            display: inline-block;
+        .btn-delete {
             padding: 7px 11px;
-            border: 1px solid #D6DCF5;
+            border: 1px solid #F0C4C4;
             border-radius: 6px;
-            color: var(--blue);
+            color: #B42318;
             background: white;
-            text-decoration: none;
             font-size: .8rem;
             white-space: nowrap;
-        }
-
-        .btn-action:hover {
-            background: var(--blue);
-            color: white;
-        }
-
-        .btn-delete {
-            border-color: #F0C4C4;
-            color: #B42318;
-            cursor: pointer;
         }
 
         .btn-delete:hover {
@@ -454,6 +566,14 @@ if (isset($_GET['edit'])) {
             .main {
                 padding: 22px 16px;
             }
+
+            .panel {
+                padding: 18px;
+            }
+
+            .page-title {
+                font-size: 2rem;
+            }
         }
     </style>
 </head>
@@ -462,9 +582,13 @@ if (isset($_GET['edit'])) {
 <div class="container-fluid">
     <div class="row">
 
+        <!-- SIDEBAR -->
         <aside class="col-md-3 col-xl-2 sidebar">
             <a href="index.php" class="brand">Pinjamin<span>.</span></a>
-            <p class="small mt-1" style="color:#C9D0FF">ADMINISTRATION</p>
+
+            <p class="small mt-1" style="color:#C9D0FF">
+                ADMINISTRATION
+            </p>
 
             <p class="menu-label">MENU UTAMA</p>
 
@@ -488,6 +612,7 @@ if (isset($_GET['edit'])) {
             </nav>
         </aside>
 
+        <!-- KONTEN -->
         <main class="col-md-9 col-xl-10 main">
 
             <div class="topbar d-flex flex-wrap justify-content-between align-items-center gap-3">
@@ -495,7 +620,7 @@ if (isset($_GET['edit'])) {
                     <p class="muted small mb-1">PINJAMIN / ADMIN</p>
                     <h1 class="page-title mb-0">Data Alat</h1>
                     <p class="muted small mb-0 mt-2">
-                        Kelola daftar alat, kategori, stok, dan kondisi alat.
+                        Kelola daftar alat berdasarkan kategori, stok, dan kondisi.
                     </p>
                 </div>
 
@@ -510,6 +635,7 @@ if (isset($_GET['edit'])) {
                 </div>
             </div>
 
+            <!-- NOTIFIKASI -->
             <?php if ($pesan !== ''): ?>
                 <div class="alert alert-<?= e($jenisPesan) ?> alert-dismissible fade show">
                     <?= e($pesan) ?>
@@ -517,26 +643,33 @@ if (isset($_GET['edit'])) {
                 </div>
             <?php endif; ?>
 
+            <!-- FORM TAMBAH / EDIT -->
             <section class="panel mb-4">
                 <h2 class="panel-title mb-3">
                     <?= $editData ? 'Edit Data Alat' : 'Tambah Alat Baru' ?>
                 </h2>
 
                 <p class="muted small mb-4">
-                    Isi informasi alat yang akan disimpan ke inventaris.
+                    Isi informasi alat dan pilih kategori yang sesuai.
                 </p>
 
-                <?php if (mysqli_num_rows($kategori) === 0): ?>
+                <?php if (count($kategoriList) === 0): ?>
                     <div class="alert alert-warning">
                         Belum ada kategori. Tambahkan kategori terlebih dahulu di
                         <a href="kategori.php">Data Kategori</a>.
                     </div>
                 <?php else: ?>
                     <form method="POST" action="alat.php">
-                        <input type="hidden" name="aksi" value="<?= $editData ? 'edit' : 'tambah' ?>">
+                        <input
+                            type="hidden"
+                            name="aksi"
+                            value="<?= $editData ? 'edit' : 'tambah' ?>">
 
                         <?php if ($editData): ?>
-                            <input type="hidden" name="id_alat" value="<?= (int) $editData['id_alat'] ?>">
+                            <input
+                                type="hidden"
+                                name="id_alat"
+                                value="<?= (int) $editData['id_alat'] ?>">
                         <?php endif; ?>
 
                         <div class="row g-3">
@@ -556,13 +689,17 @@ if (isset($_GET['edit'])) {
                                 <label class="form-label">Kategori</label>
                                 <select name="id_kategori" class="form-select" required>
                                     <option value="">Pilih kategori</option>
-                                    <?php while ($k = mysqli_fetch_assoc($kategori)): ?>
+
+                                    <?php foreach ($kategoriList as $k): ?>
                                         <option
                                             value="<?= (int) $k['id_kategori'] ?>"
-                                            <?= isset($editData['id_kategori']) && (int) $editData['id_kategori'] === (int) $k['id_kategori'] ? 'selected' : '' ?>>
+                                            <?= isset($editData['id_kategori']) &&
+                                                (int) $editData['id_kategori'] ===
+                                                (int) $k['id_kategori']
+                                                ? 'selected' : '' ?>>
                                             <?= e($k['nama_kategori']) ?>
                                         </option>
-                                    <?php endwhile; ?>
+                                    <?php endforeach; ?>
                                 </select>
                             </div>
 
@@ -580,10 +717,17 @@ if (isset($_GET['edit'])) {
                             <div class="col-md-6">
                                 <label class="form-label">Kondisi</label>
                                 <select name="kondisi" class="form-select" required>
-                                    <option value="baik" <?= !isset($editData['kondisi']) || $editData['kondisi'] === 'baik' ? 'selected' : '' ?>>
+                                    <option value="baik"
+                                        <?= !isset($editData['kondisi']) ||
+                                            $editData['kondisi'] === 'baik'
+                                            ? 'selected' : '' ?>>
                                         Baik
                                     </option>
-                                    <option value="rusak" <?= isset($editData['kondisi']) && $editData['kondisi'] === 'rusak' ? 'selected' : '' ?>>
+
+                                    <option value="rusak"
+                                        <?= isset($editData['kondisi']) &&
+                                            $editData['kondisi'] === 'rusak'
+                                            ? 'selected' : '' ?>>
                                         Rusak
                                     </option>
                                 </select>
@@ -595,7 +739,9 @@ if (isset($_GET['edit'])) {
                                 </button>
 
                                 <?php if ($editData): ?>
-                                    <a href="alat.php" class="btn-yellow">Batal</a>
+                                    <a href="alat.php" class="btn-yellow">
+                                        Batal
+                                    </a>
                                 <?php endif; ?>
                             </div>
                         </div>
@@ -603,11 +749,38 @@ if (isset($_GET['edit'])) {
                 <?php endif; ?>
             </section>
 
+            <!-- DAFTAR ALAT DAN FILTER KATEGORI -->
             <section class="panel">
-                <h2 class="panel-title mb-1">Daftar Alat</h2>
-                <p class="muted small mb-4">
-                    Semua alat yang terdaftar di inventaris.
-                </p>
+                <div class="category-info">
+                    <div>
+                        <h2 class="panel-title mb-1">Daftar Alat</h2>
+                        <p class="muted small mb-0">
+                            Klik kategori untuk melihat alat di dalamnya.
+                        </p>
+                    </div>
+
+                    <span class="count">
+                        <?= $filterKategori > 0 ? mysqli_num_rows($hasilAlat) : $jumlahAlat ?>
+                        Data Alat
+                    </span>
+                </div>
+
+                <!-- BUTTON KATEGORI MENYAMPING -->
+                <div class="category-buttons">
+                    <a
+                        href="alat.php"
+                        class="category-btn <?= $filterKategori === 0 ? 'active' : '' ?>">
+                        Semua
+                    </a>
+
+                    <?php foreach ($kategoriList as $k): ?>
+                        <a
+                            href="alat.php?kategori=<?= (int) $k['id_kategori'] ?>"
+                            class="category-btn <?= $filterKategori === (int) $k['id_kategori'] ? 'active' : '' ?>">
+                            <?= e($k['nama_kategori']) ?>
+                        </a>
+                    <?php endforeach; ?>
+                </div>
 
                 <div class="table-responsive">
                     <table class="table table-hover">
@@ -623,39 +796,55 @@ if (isset($_GET['edit'])) {
                         </thead>
 
                         <tbody>
-                            <?php if ($jumlahAlat > 0): ?>
+                            <?php if (mysqli_num_rows($hasilAlat) > 0): ?>
                                 <?php $no = 1; ?>
-                                <?php while ($a = mysqli_fetch_assoc($dataAlat)): ?>
+
+                                <?php while ($a = mysqli_fetch_assoc($hasilAlat)): ?>
                                     <tr>
                                         <td><?= $no++ ?></td>
-                                        <td class="fw-semibold"><?= e($a['nama_alat']) ?></td>
-                                        <td><?= e($a['nama_kategori'] ?? 'Tidak berkategori') ?></td>
+
+                                        <td class="fw-semibold">
+                                            <?= e($a['nama_alat']) ?>
+                                        </td>
+
+                                        <td>
+                                            <?= e($a['nama_kategori'] ?? 'Tanpa Kategori') ?>
+                                        </td>
+
                                         <td><?= (int) $a['stok'] ?></td>
+
                                         <td>
                                             <span class="status <?= $a['kondisi'] === 'rusak' ? 'rusak' : '' ?>">
                                                 <?= e(ucfirst($a['kondisi'])) ?>
                                             </span>
                                         </td>
+
                                         <td>
                                             <div class="action">
                                                 <a
-    href="edit_alat.php?id=<?= (int) $a['id_alat'] ?>"
-    class="btn btn-sm btn-warning">
-    Edit
-</a>
+                                                    href="alat.php?edit=<?= (int) $a['id_alat'] ?>"
+                                                    class="btn btn-sm btn-warning">
+                                                    Edit
+                                                </a>
 
                                                 <form
                                                     method="POST"
                                                     action="alat.php"
                                                     onsubmit="return confirm('Yakin ingin menghapus alat ini?')">
 
-                                                    <input type="hidden" name="aksi" value="hapus">
+                                                    <input
+                                                        type="hidden"
+                                                        name="aksi"
+                                                        value="hapus">
+
                                                     <input
                                                         type="hidden"
                                                         name="id_alat"
                                                         value="<?= (int) $a['id_alat'] ?>">
 
-                                                    <button type="submit" class="btn-action btn-delete">
+                                                    <button
+                                                        type="submit"
+                                                        class="btn-delete">
                                                         Hapus
                                                     </button>
                                                 </form>
@@ -663,10 +852,11 @@ if (isset($_GET['edit'])) {
                                         </td>
                                     </tr>
                                 <?php endwhile; ?>
+
                             <?php else: ?>
                                 <tr>
                                     <td colspan="6" class="text-center py-4 muted">
-                                        Belum ada data alat.
+                                        Belum ada alat dalam kategori ini.
                                     </td>
                                 </tr>
                             <?php endif; ?>
